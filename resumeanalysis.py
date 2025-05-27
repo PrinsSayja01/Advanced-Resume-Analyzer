@@ -1,7 +1,7 @@
-# Updated and fixed resume analyzer
+# professional_resume_analyzer.py
 import streamlit as st
 
-# ========== PAGE CONFIG (MUST BE FIRST) ==========
+# ========== STREAMLIT CONFIG (MUST BE FIRST) ==========
 st.set_page_config(
     page_title="AI Resume Analyzer Pro",
     layout="wide",
@@ -9,11 +9,11 @@ st.set_page_config(
     menu_items={
         'Get Help': 'https://github.com/yourusername/resume-analyzer',
         'Report a bug': "https://github.com/yourusername/resume-analyzer/issues",
-        'About': "# Advanced Resume Analyzer with Continuous Learning"
+        'About': "# Advanced Resume Analyzer\n\nContinuous learning system for resume optimization"
     }
 )
 
-# ========== IMPORTS (AFTER PAGE CONFIG) ==========
+# ========== IMPORTS ==========
 import spacy
 import pdfplumber
 import docx
@@ -25,54 +25,57 @@ import subprocess
 from datetime import datetime
 from sklearn.feature_extraction.text import TfidfVectorizer
 from collections import defaultdict
-from sklearn.ensemble import RandomForestClassifier
 import numpy as np
 
 # ========== NLP INITIALIZATION ==========
 @st.cache_resource
 def load_nlp_model():
+    """Load spaCy model with automatic download if missing"""
     try:
         return spacy.load("en_core_web_sm")
     except OSError:
-        st.warning("Downloading language model... (one-time setup)")
+        st.warning("Downloading language model (one-time setup)...")
         try:
-            subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"], check=True)
+            subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"], 
+                          check=True, stderr=subprocess.PIPE)
             return spacy.load("en_core_web_sm")
         except Exception as e:
-            st.error(f"Failed to load NLP model: {str(e)}")
+            st.error(f"Model download failed: {str(e)}")
             st.stop()
 
 nlp = load_nlp_model()
 
-# ========== DATA STORAGE ==========
-DATA_DIR = "resume_analyzer_data"
+# ========== DATA MANAGEMENT ==========
+DATA_DIR = "resume_data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
-def load_history():
+def get_history():
+    """Safe history loading with error recovery"""
     try:
-        history_path = os.path.join(DATA_DIR, "analysis_history.pkl")
-        if os.path.exists(history_path):
-            with open(history_path, "rb") as f:
+        history_file = os.path.join(DATA_DIR, "analysis_history.pkl")
+        if os.path.exists(history_file):
+            with open(history_file, "rb") as f:
                 return pickle.load(f)
     except Exception as e:
-        st.warning(f"Error loading history: {str(e)}")
-    return {"resumes": [], "jobs": [], "matches": [], "timestamps": []}
+        st.warning(f"History load error: {str(e)}")
+    return {"resumes": [], "jobs": [], "matches": []}
 
 def save_history(data):
+    """Atomic history saving"""
     try:
-        temp_path = os.path.join(DATA_DIR, "temp_history.pkl")
-        history_path = os.path.join(DATA_DIR, "analysis_history.pkl")
+        temp_file = os.path.join(DATA_DIR, "temp_history.pkl")
+        history_file = os.path.join(DATA_DIR, "analysis_history.pkl")
         
-        with open(temp_path, "wb") as f:
+        with open(temp_file, "wb") as f:
             pickle.dump(data, f)
         
-        if os.path.exists(temp_path):
-            os.replace(temp_path, history_path)
+        os.replace(temp_file, history_file)
     except Exception as e:
-        st.warning(f"Error saving history: {str(e)}")
+        st.warning(f"History save error: {str(e)}")
 
-# ========== FILE PROCESSING ==========
+# ========== DOCUMENT PROCESSING ==========
 def extract_text(file):
+    """Robust text extraction from PDF/DOCX"""
     if not file:
         return ""
     
@@ -82,9 +85,14 @@ def extract_text(file):
                 text = []
                 for page in pdf.pages:
                     try:
-                        page_text = page.extract_text() or page.crop(page.mediabox).extract_text()
-                        text.append(page_text or "")
-                    except:
+                        # Primary extraction method
+                        content = page.extract_text()
+                        # Fallback to mediabox if needed
+                        if not content:
+                            content = page.crop(page.mediabox).extract_text()
+                        text.append(content or "")
+                    except Exception as e:
+                        st.warning(f"Page processing warning: {str(e)}")
                         text.append("")
                 return " ".join(text).strip()
                 
@@ -92,66 +100,63 @@ def extract_text(file):
             doc = docx.Document(file)
             return " ".join(para.text for para in doc.paragraphs if para.text)
     except Exception as e:
-        st.error(f"File reading error: {str(e)}")
+        st.error(f"File processing failed: {str(e)}")
     return ""
 
 # ========== SKILLS DATABASE ==========
-SKILLS_DATABASE = {
+SKILLS = {
     "technical": {
-        "programming": ["python", "java", "javascript", "sql", "c++"],
-        "cloud": ["aws", "azure", "docker", "kubernetes"],
-        "data": ["pandas", "numpy", "machine learning"]
+        "Programming": ["python", "java", "javascript", "sql", "c++"],
+        "Cloud": ["aws", "azure", "docker", "kubernetes"],
+        "Data": ["pandas", "numpy", "machine learning"]
     },
     "soft": {
-        "communication": ["presentation", "writing", "public speaking"],
-        "management": ["leadership", "teamwork", "project management"]
+        "Communication": ["presentation", "writing", "public speaking"],
+        "Management": ["leadership", "teamwork", "project management"]
     }
 }
 
-# ========== ANALYSIS FUNCTIONS ==========
-def extract_skills(text):
-    if not text:
-        return defaultdict(set)
-    
+# ========== CORE ANALYSIS ==========
+def analyze_documents(resume_text, job_text):
+    """Main analysis function with error handling"""
     try:
-        text_lower = text.lower()
-        found_skills = defaultdict(set)
+        # Skill extraction
+        resume_skills = defaultdict(set)
+        job_skills = defaultdict(set)
         
-        for category in SKILLS_DATABASE:
-            if isinstance(SKILLS_DATABASE[category], dict):
-                for subcategory, skills in SKILLS_DATABASE[category].items():
-                    for skill in skills:
-                        if skill in text_lower:
-                            found_skills[category].add(skill)
-        return found_skills
-    except Exception as e:
-        st.warning(f"Skill extraction error: {str(e)}")
-        return defaultdict(set)
-
-def analyze(resume_text, job_text):
-    try:
-        resume_skills = extract_skills(resume_text)
-        job_skills = extract_skills(job_text)
+        text_pairs = [
+            (resume_text.lower(), resume_skills),
+            (job_text.lower(), job_skills)
+        ]
         
+        for text, skills_dict in text_pairs:
+            for category in SKILLS:
+                for subcategory, skill_list in SKILLS[category].items():
+                    for skill in skill_list:
+                        if skill in text:
+                            skills_dict[category].add(skill)
+        
+        # Calculate matches
         results = {}
-        for category in ["technical", "soft"]:
-            job_set = job_skills.get(category, set())
-            resume_set = resume_skills.get(category, set())
+        for category in SKILLS:
+            job_set = job_skills[category]
+            resume_set = resume_skills[category]
             
-            match_pct = len(job_set & resume_set) / max(1, len(job_set)) * 100
-            results[f"{category}_match"] = round(match_pct, 1)
+            match_percent = len(job_set & resume_set) / max(1, len(job_set)) * 100
+            results[f"{category}_match"] = round(match_percent, 1)
             results[f"missing_{category}"] = sorted(job_set - resume_set)
         
-        history = load_history()
+        # Update history
+        history = get_history()
         history["resumes"].append(resume_text)
         history["jobs"].append(job_text)
         history["matches"].append(results["technical_match"] / 100)
-        history["timestamps"].append(datetime.now())
         save_history(history)
         
         return results
+        
     except Exception as e:
-        st.error(f"Analysis error: {str(e)}")
+        st.error(f"Analysis failed: {str(e)}")
         return {
             "technical_match": 0,
             "soft_match": 0,
@@ -159,54 +164,77 @@ def analyze(resume_text, job_text):
             "missing_soft": []
         }
 
-# ========== MAIN APP ==========
+# ========== STREAMLIT UI ==========
 def main():
     st.title("📄 Professional Resume Analyzer")
-    st.write("""
-    **AI-powered resume analysis with continuous learning**
-    - 🛠️ Technical skill matching
-    - 🧠 Soft skill evaluation
-    - 📈 Gets smarter with each analysis
+    st.markdown("""
+    **AI-powered resume optimization**  
+    Continuous learning system that improves with each analysis
     """)
     
-    with st.expander("How to use"):
+    with st.expander("ℹ️ How to use"):
         st.write("""
-        1. Paste job description
-        2. Upload resume (PDF/DOCX)
+        1. Paste the job description
+        2. Upload your resume (PDF or Word)
         3. Click Analyze
-        4. View your matches
+        4. View your match score and improvement suggestions
         """)
     
     col1, col2 = st.columns(2)
     with col1:
-        job_desc = st.text_area("Job Description:", height=250)
+        job_desc = st.text_area(
+            "Job Description:", 
+            height=300,
+            placeholder="Paste the complete job description here..."
+        )
     with col2:
-        resume_file = st.file_uploader("Upload Resume:", type=["pdf", "docx"])
+        resume_file = st.file_uploader(
+            "Upload Resume:", 
+            type=["pdf", "docx"],
+            help="PDF or Word documents only"
+        )
     
     if st.button("Analyze Resume", type="primary"):
         if not job_desc or not resume_file:
             st.warning("Please provide both job description and resume")
         else:
-            with st.spinner("Analyzing..."):
+            with st.spinner("Analyzing documents..."):
                 resume_text = extract_text(resume_file)
                 if not resume_text:
-                    st.error("Failed to extract text from resume")
+                    st.error("Failed to extract text from resume file")
                 else:
-                    analysis = analyze(resume_text, job_desc)
+                    analysis = analyze_documents(resume_text, job_desc)
                     
-                    st.success("## Analysis Results")
+                    # Display results
+                    st.success("## 📊 Analysis Results")
+                    
+                    # Match metrics
                     cols = st.columns(2)
-                    cols[0].metric("Technical Match", f"{analysis['technical_match']}%")
-                    cols[1].metric("Soft Skills", f"{analysis['soft_match']}%")
+                    cols[0].metric(
+                        "Technical Skills Match", 
+                        f"{analysis['technical_match']}%",
+                        help="Percentage of required technical skills matched"
+                    )
+                    cols[1].metric(
+                        "Soft Skills Match", 
+                        f"{analysis['soft_match']}%",
+                        help="Percentage of required soft skills matched"
+                    )
                     
-                    st.subheader("Improvement Suggestions")
+                    # Improvement suggestions
+                    st.subheader("🔍 Improvement Suggestions")
                     for category in ["technical", "soft"]:
                         if analysis[f"missing_{category}"]:
-                            st.write(f"**Missing {category} skills:**")
-                            st.write(", ".join(analysis[f"missing_{category}"]))
+                            with st.expander(f"Missing {category.capitalize()} Skills"):
+                                st.write(", ".join(analysis[f"missing_{category}"]))
                     
-                    history = load_history()
-                    st.caption(f"System has learned from {len(history['resumes'])} analyses")
+                    # System status
+                    history = get_history()
+                    st.caption(f"💡 System has processed {len(history['resumes'])} resumes")
 
+# ========== EXECUTION GUARD ==========
 if __name__ == "__main__":
+    if not st.runtime.exists():
+        # Running in bare mode (testing/debugging)
+        print("Running in test mode - some Streamlit features may be limited")
     main()
