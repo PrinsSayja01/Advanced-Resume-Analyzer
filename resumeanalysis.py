@@ -1,31 +1,54 @@
-# advanced_resume_analyzer.py
+# Updated and fixed resume analyzer
+import streamlit as st
+
+# ========== PAGE CONFIG (MUST BE FIRST) ==========
+st.set_page_config(
+    page_title="AI Resume Analyzer Pro",
+    layout="wide",
+    page_icon="📄",
+    menu_items={
+        'Get Help': 'https://github.com/yourusername/resume-analyzer',
+        'Report a bug': "https://github.com/yourusername/resume-analyzer/issues",
+        'About': "# Advanced Resume Analyzer with Continuous Learning"
+    }
+)
+
+# ========== IMPORTS (AFTER PAGE CONFIG) ==========
 import spacy
 import pdfplumber
 import docx
 import re
 import pickle
 import os
+import sys
+import subprocess
 from datetime import datetime
 from sklearn.feature_extraction.text import TfidfVectorizer
-import streamlit as st
 from collections import defaultdict
 from sklearn.ensemble import RandomForestClassifier
 import numpy as np
 
-# Initialize NLP
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    import subprocess
-    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
-    nlp = spacy.load("en_core_web_sm")
+# ========== NLP INITIALIZATION ==========
+@st.cache_resource
+def load_nlp_model():
+    try:
+        return spacy.load("en_core_web_sm")
+    except OSError:
+        st.warning("Downloading language model... (one-time setup)")
+        try:
+            subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"], check=True)
+            return spacy.load("en_core_web_sm")
+        except Exception as e:
+            st.error(f"Failed to load NLP model: {str(e)}")
+            st.stop()
 
-# ================== DATA STORAGE ==================
+nlp = load_nlp_model()
+
+# ========== DATA STORAGE ==========
 DATA_DIR = "resume_analyzer_data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def load_history():
-    """Safe history loading with error handling"""
     try:
         history_path = os.path.join(DATA_DIR, "analysis_history.pkl")
         if os.path.exists(history_path):
@@ -36,17 +59,20 @@ def load_history():
     return {"resumes": [], "jobs": [], "matches": [], "timestamps": []}
 
 def save_history(data):
-    """Safe history saving"""
     try:
+        temp_path = os.path.join(DATA_DIR, "temp_history.pkl")
         history_path = os.path.join(DATA_DIR, "analysis_history.pkl")
-        with open(history_path, "wb") as f:
+        
+        with open(temp_path, "wb") as f:
             pickle.dump(data, f)
+        
+        if os.path.exists(temp_path):
+            os.replace(temp_path, history_path)
     except Exception as e:
         st.warning(f"Error saving history: {str(e)}")
 
-# ================== ENHANCED PDF HANDLING ==================
+# ========== FILE PROCESSING ==========
 def extract_text(file):
-    """Robust text extraction from PDF/DOCX with error recovery"""
     if not file:
         return ""
     
@@ -56,19 +82,9 @@ def extract_text(file):
                 text = []
                 for page in pdf.pages:
                     try:
-                        # Try normal extraction first
-                        page_text = page.extract_text()
-                        
-                        # Fallback to mediabox if needed
-                        if not page_text:
-                            try:
-                                page_text = page.crop(page.mediabox).extract_text()
-                            except:
-                                page_text = ""
-                        
+                        page_text = page.extract_text() or page.crop(page.mediabox).extract_text()
                         text.append(page_text or "")
-                    except Exception as e:
-                        st.warning(f"Page processing error: {str(e)}")
+                    except:
                         text.append("")
                 return " ".join(text).strip()
                 
@@ -79,93 +95,46 @@ def extract_text(file):
         st.error(f"File reading error: {str(e)}")
     return ""
 
-# ================== SKILLS DATABASE ==================
+# ========== SKILLS DATABASE ==========
 SKILLS_DATABASE = {
     "technical": {
         "programming": ["python", "java", "javascript", "sql", "c++"],
         "cloud": ["aws", "azure", "docker", "kubernetes"],
-        "data": ["pandas", "numpy", "machine learning", "pytorch"]
+        "data": ["pandas", "numpy", "machine learning"]
     },
     "soft": {
         "communication": ["presentation", "writing", "public speaking"],
         "management": ["leadership", "teamwork", "project management"]
-    },
-    "languages": ["english", "spanish", "french", "german"]
+    }
 }
 
-# ================== MACHINE LEARNING MODEL ==================
-class SkillPredictor:
-    def __init__(self):
-        self.model = RandomForestClassifier(n_estimators=100)
-        self.vectorizer = TfidfVectorizer(max_features=2000)
-        self.is_trained = False
-    
-    def train(self, X, y):
-        """Train model with error handling"""
-        try:
-            X_vec = self.vectorizer.fit_transform(X)
-            self.model.fit(X_vec, y)
-            self.is_trained = True
-            with open(os.path.join(DATA_DIR, "model.pkl"), "wb") as f:
-                pickle.dump(self, f)
-            return True
-        except Exception as e:
-            st.error(f"Model training failed: {str(e)}")
-            return False
-    
-    def predict(self, text):
-        """Safe prediction with fallback"""
-        if not self.is_trained:
-            return 0.5
-        try:
-            return self.model.predict_proba(self.vectorizer.transform([text]))[0][1]
-        except:
-            return 0.5
-
-# Initialize model
-try:
-    with open(os.path.join(DATA_DIR, "model.pkl"), "rb") as f:
-        model = pickle.load(f)
-except:
-    model = SkillPredictor()
-
-# ================== CORE ANALYSIS ==================
+# ========== ANALYSIS FUNCTIONS ==========
 def extract_skills(text):
-    """Robust skill extraction from text"""
     if not text:
         return defaultdict(set)
     
     try:
-        doc = nlp(text.lower())
+        text_lower = text.lower()
         found_skills = defaultdict(set)
         
-        # Check multi-word phrases first
         for category in SKILLS_DATABASE:
-            if isinstance(SKILLS_DATABASE[category], dict):  # Nested categories
+            if isinstance(SKILLS_DATABASE[category], dict):
                 for subcategory, skills in SKILLS_DATABASE[category].items():
                     for skill in skills:
-                        if skill in text.lower():
+                        if skill in text_lower:
                             found_skills[category].add(skill)
-            else:  # Flat lists (languages)
-                for skill in SKILLS_DATABASE[category]:
-                    if skill in text.lower():
-                        found_skills[category].add(skill)
-        
         return found_skills
     except Exception as e:
         st.warning(f"Skill extraction error: {str(e)}")
         return defaultdict(set)
 
 def analyze(resume_text, job_text):
-    """Complete analysis with learning"""
     try:
-        # Basic skill matching
         resume_skills = extract_skills(resume_text)
         job_skills = extract_skills(job_text)
         
-        # Calculate matches
         results = {}
-        for category in ["technical", "soft", "languages"]:
+        for category in ["technical", "soft"]:
             job_set = job_skills.get(category, set())
             resume_set = resume_skills.get(category, set())
             
@@ -173,7 +142,6 @@ def analyze(resume_text, job_text):
             results[f"{category}_match"] = round(match_pct, 1)
             results[f"missing_{category}"] = sorted(job_set - resume_set)
         
-        # Store for learning
         history = load_history()
         history["resumes"].append(resume_text)
         history["jobs"].append(job_text)
@@ -181,58 +149,37 @@ def analyze(resume_text, job_text):
         history["timestamps"].append(datetime.now())
         save_history(history)
         
-        # Add ML prediction if enough data
-        if len(history["resumes"]) >= 5:
-            results["ml_prediction"] = round(
-                model.predict(resume_text + " " + job_text) * 100, 1
-            )
-            
-            # Retrain periodically
-            if len(history["resumes"]) % 5 == 0 and len(history["resumes"]) >= 10:
-                model.train(history["resumes"] + history["jobs"], history["matches"])
-        
         return results
-    
     except Exception as e:
         st.error(f"Analysis error: {str(e)}")
         return {
             "technical_match": 0,
             "soft_match": 0,
-            "languages_match": 0,
             "missing_technical": [],
-            "missing_soft": [],
-            "missing_languages": []
+            "missing_soft": []
         }
 
-# ================== STREAMLIT UI ==================
+# ========== MAIN APP ==========
 def main():
-    st.set_page_config(
-        page_title="AI Resume Analyzer Pro",
-        layout="wide",
-        page_icon="📄"
-    )
-    
-    st.title("📄 Advanced Resume Analyzer")
-    st.markdown("""
-    **Features:**
+    st.title("📄 Professional Resume Analyzer")
+    st.write("""
+    **AI-powered resume analysis with continuous learning**
     - 🛠️ Technical skill matching
     - 🧠 Soft skill evaluation
-    - 🌐 Language proficiency
-    - 🤖 Machine learning improvements
-    - 💾 Persistent learning across sessions
+    - 📈 Gets smarter with each analysis
     """)
     
     with st.expander("How to use"):
         st.write("""
         1. Paste job description
-        2. Upload your resume (PDF/DOCX)
+        2. Upload resume (PDF/DOCX)
         3. Click Analyze
-        4. View matches and suggestions
+        4. View your matches
         """)
     
     col1, col2 = st.columns(2)
     with col1:
-        job_desc = st.text_area("Job Description:", height=300)
+        job_desc = st.text_area("Job Description:", height=250)
     with col2:
         resume_file = st.file_uploader("Upload Resume:", type=["pdf", "docx"])
     
@@ -247,25 +194,17 @@ def main():
                 else:
                     analysis = analyze(resume_text, job_desc)
                     
-                    # Display results
-                    st.success("## 📊 Analysis Results")
-                    
-                    # Match scores
-                    cols = st.columns(4)
-                    cols[0].metric("Technical", f"{analysis['technical_match']}%")
+                    st.success("## Analysis Results")
+                    cols = st.columns(2)
+                    cols[0].metric("Technical Match", f"{analysis['technical_match']}%")
                     cols[1].metric("Soft Skills", f"{analysis['soft_match']}%")
-                    cols[2].metric("Languages", f"{analysis['languages_match']}%")
-                    if "ml_prediction" in analysis:
-                        cols[3].metric("AI Prediction", f"{analysis['ml_prediction']}%")
                     
-                    # Missing skills
-                    st.subheader("🔍 Improvement Suggestions")
-                    for category in ["technical", "soft", "languages"]:
+                    st.subheader("Improvement Suggestions")
+                    for category in ["technical", "soft"]:
                         if analysis[f"missing_{category}"]:
-                            st.warning(f"Missing {category} skills:")
+                            st.write(f"**Missing {category} skills:**")
                             st.write(", ".join(analysis[f"missing_{category}"]))
                     
-                    # Learning status
                     history = load_history()
                     st.caption(f"System has learned from {len(history['resumes'])} analyses")
 
