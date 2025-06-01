@@ -7,8 +7,8 @@ st.set_page_config(
     layout="wide",
     page_icon="📄",
     menu_items={
-        'Get Help': 'https://github.com/yourusername/resume-analyzer',
-        'Report a bug': "https://github.com/yourusername/resume-analyzer/issues",
+        'Get Help': 'https://github.com/PrinsSayja01/Advanced-Resume-Analyzer',
+        'Report a bug': "https://github.com/PrinsSayja01/Advanced-Resume-Analyzer/issues",
         'About': "# Advanced Resume Analyzer\n\nContinuous learning system for resume optimization"
     }
 )
